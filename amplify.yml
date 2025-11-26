@@ -9,7 +9,6 @@ frontend:
     build:
       commands:
         - echo "Building React application..."
-        - echo "API URL: $REACT_APP_API_URL"
         - npm run build
   artifacts:
     baseDirectory: frontend/build
