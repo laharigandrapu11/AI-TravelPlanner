@@ -5,7 +5,7 @@ frontend:
       commands:
         - echo "Installing frontend dependencies..."
         - cd frontend
-        - npm ci
+        - npm install
     build:
       commands:
         - echo "Building React application..."
