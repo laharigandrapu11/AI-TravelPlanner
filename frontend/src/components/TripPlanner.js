@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import DatePicker from 'react-datepicker';
 import Select from 'react-select';
 import { Plane, MapPin, Calendar, DollarSign, Users, Sparkles, Loader } from 'lucide-react';
-import axios from 'axios';
+import apiClient from '../config/api';
 import 'react-datepicker/dist/react-datepicker.css';
 
 const TripPlanner = () => {
@@ -96,7 +96,7 @@ const TripPlanner = () => {
       setPlanningStep('Processing user preferences...');
       
       // Start trip planning
-      const response = await axios.post('/api/plan-trip', tripData);
+      const response = await apiClient.post('/api/plan-trip', tripData);
       const { task_id } = response.data;
 
       setPlanningStep('Coordinating agents...');
@@ -104,7 +104,7 @@ const TripPlanner = () => {
       // Poll for completion
       const pollInterval = setInterval(async () => {
         try {
-          const statusResponse = await axios.get(`/api/trip-status/${task_id}`);
+          const statusResponse = await apiClient.get(`/api/trip-status/${task_id}`);
           
           if (statusResponse.data.status === 'completed') {
             clearInterval(pollInterval);

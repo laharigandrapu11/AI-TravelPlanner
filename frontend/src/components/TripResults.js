@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useParams } from 'react-router-dom';
 import { Plane, MapPin, Calendar, DollarSign, Clock, Star, Users } from 'lucide-react';
-import axios from 'axios';
+import apiClient from '../config/api';
 
 const TripResults = () => {
   const { tripId } = useParams();
@@ -15,7 +15,7 @@ const TripResults = () => {
 
   const fetchTripData = async () => {
     try {
-      const response = await axios.get(`/api/trip-status/${tripId}`);
+      const response = await apiClient.get(`/api/trip-status/${tripId}`);
       if (response.data.status === 'completed') {
         setTripData(response.data.result);
       } else {
