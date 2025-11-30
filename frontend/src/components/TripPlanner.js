@@ -97,32 +97,44 @@ const TripPlanner = () => {
       
       // Start trip planning
       const response = await apiClient.post('/api/plan-trip', tripData);
-      const { task_id } = response.data;
+      
+      // Check if response is synchronous (completed) or asynchronous (task_id)
+      if (response.data.status === 'completed' && response.data.result) {
+        // Synchronous response - store result and navigate directly
+        const tripId = response.data.result.trip_id || `sync-${Date.now()}`;
+        localStorage.setItem(`trip_${tripId}`, JSON.stringify(response.data.result));
+        setIsPlanning(false);
+        navigate(`/results/${tripId}`);
+      } else if (response.data.task_id) {
+        // Asynchronous response - poll for completion
+        const { task_id } = response.data;
+        setPlanningStep('Coordinating agents...');
 
-      setPlanningStep('Coordinating agents...');
-
-      // Poll for completion
-      const pollInterval = setInterval(async () => {
-        try {
-          const statusResponse = await apiClient.get(`/api/trip-status/${task_id}`);
-          
-          if (statusResponse.data.status === 'completed') {
+        // Poll for completion
+        const pollInterval = setInterval(async () => {
+          try {
+            const statusResponse = await apiClient.get(`/api/trip-status/${task_id}`);
+            
+            if (statusResponse.data.status === 'completed') {
+              clearInterval(pollInterval);
+              setIsPlanning(false);
+              navigate(`/results/${task_id}`);
+            } else if (statusResponse.data.status === 'failed') {
+              clearInterval(pollInterval);
+              setIsPlanning(false);
+              alert('Trip planning failed. Please try again.');
+            } else {
+              setPlanningStep('Creating your perfect itinerary...');
+            }
+          } catch (error) {
             clearInterval(pollInterval);
             setIsPlanning(false);
-            navigate(`/results/${task_id}`);
-          } else if (statusResponse.data.status === 'failed') {
-            clearInterval(pollInterval);
-            setIsPlanning(false);
-            alert('Trip planning failed. Please try again.');
-          } else {
-            setPlanningStep('Creating your perfect itinerary...');
+            console.error('Error checking trip status:', error);
           }
-        } catch (error) {
-          clearInterval(pollInterval);
-          setIsPlanning(false);
-          console.error('Error checking trip status:', error);
-        }
-      }, 2000);
+        }, 2000);
+      } else {
+        throw new Error('Unexpected response format');
+      }
 
     } catch (error) {
       setIsPlanning(false);

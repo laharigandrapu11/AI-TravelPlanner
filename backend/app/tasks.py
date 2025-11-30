@@ -132,4 +132,96 @@ def get_recommendations_task(data):
         return recommendation_agent.get_recommendations(data)
     except Exception as e:
         logger.error(f"Error getting recommendations: {str(e)}")
+        raise
+
+def plan_trip_task_sync(trip_data):
+    """Synchronous version of plan_trip_task (for free tier without Celery/Redis)"""
+    try:
+        logger.info(f"Starting trip planning for destination: {trip_data['destination']}")
+        
+        # Initialize agents
+        user_agent = UserAgent()
+        flight_agent = FlightAgent()
+        hotel_agent = HotelAgent()
+        itinerary_agent = ItineraryAgent()
+        budget_agent = BudgetAgent()
+        recommendation_agent = RecommendationAgent()
+        
+        # Step 1: Process user preferences
+        logger.info('Step: Processing user preferences')
+        user_preferences = user_agent.process_preferences(trip_data)
+        
+        # Step 2: Search for flights
+        logger.info('Step: Searching flights')
+        flights = flight_agent.search_flights({
+            'origin': trip_data.get('origin', ''),
+            'destination': trip_data['destination'],
+            'start_date': trip_data['start_date'],
+            'end_date': trip_data['end_date'],
+            'budget': trip_data['budget']
+        })
+        
+        # Step 3: Search for hotels
+        logger.info('Step: Searching hotels')
+        hotels = hotel_agent.search_hotels({
+            'destination': trip_data['destination'],
+            'check_in': trip_data['start_date'],
+            'check_out': trip_data['end_date'],
+            'budget': trip_data['budget'],
+            'preferences': trip_data['preferences']
+        })
+        
+        # Step 4: Get recommendations
+        logger.info('Step: Getting recommendations')
+        recommendations = recommendation_agent.get_recommendations({
+            'destination': trip_data['destination'],
+            'preferences': trip_data['preferences'],
+            'budget': trip_data['budget']
+        })
+        
+        # Step 5: Create itinerary
+        logger.info('Step: Creating itinerary')
+        itinerary = itinerary_agent.create_itinerary({
+            'destination': trip_data['destination'],
+            'start_date': trip_data['start_date'],
+            'end_date': trip_data['end_date'],
+            'preferences': trip_data['preferences'],
+            'recommendations': recommendations,
+            'flights': flights,
+            'hotels': hotels
+        })
+        
+        # Step 6: Budget analysis
+        logger.info('Step: Analyzing budget')
+        budget_analysis = budget_agent.analyze_budget({
+            'flights': flights,
+            'hotels': hotels,
+            'itinerary': itinerary,
+            'total_budget': trip_data['budget']
+        })
+        
+        # Step 7: Finalize trip plan
+        logger.info('Step: Finalizing trip plan')
+        
+        import uuid
+        trip_plan = {
+            'trip_id': f"trip_{uuid.uuid4().hex[:8]}",
+            'destination': trip_data['destination'],
+            'start_date': trip_data['start_date'],
+            'end_date': trip_data['end_date'],
+            'flights': flights,
+            'hotels': hotels,
+            'itinerary': itinerary,
+            'recommendations': recommendations,
+            'budget_analysis': budget_analysis,
+            'total_cost': budget_analysis.get('total_cost', 0),
+            'budget_remaining': budget_analysis.get('budget_remaining', 0),
+            'status': 'completed'
+        }
+        
+        logger.info(f"Trip planning completed successfully for {trip_data['destination']}")
+        return trip_plan
+        
+    except Exception as e:
+        logger.error(f"Error in trip planning: {str(e)}")
         raise 

@@ -15,6 +15,17 @@ const TripResults = () => {
 
   const fetchTripData = async () => {
     try {
+      // Check if this is a synchronous trip (stored in localStorage)
+      if (tripId.startsWith('sync-')) {
+        const storedData = localStorage.getItem(`trip_${tripId}`);
+        if (storedData) {
+          setTripData(JSON.parse(storedData));
+          setLoading(false);
+          return;
+        }
+      }
+      
+      // Try to fetch from API (for async Celery tasks)
       const response = await apiClient.get(`/api/trip-status/${tripId}`);
       if (response.data.status === 'completed') {
         setTripData(response.data.result);
@@ -22,8 +33,14 @@ const TripResults = () => {
         setError('Trip data not found or still processing');
       }
     } catch (error) {
-      setError('Failed to load trip data');
-      console.error('Error fetching trip data:', error);
+      // If API fails, check localStorage as fallback
+      const storedData = localStorage.getItem(`trip_${tripId}`);
+      if (storedData) {
+        setTripData(JSON.parse(storedData));
+      } else {
+        setError('Failed to load trip data');
+        console.error('Error fetching trip data:', error);
+      }
     } finally {
       setLoading(false);
     }

@@ -1,6 +1,5 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-from celery.result import AsyncResult
 import os
 from dotenv import load_dotenv
 from app.agents.user_agent import UserAgent
@@ -9,8 +8,18 @@ from app.agents.hotel_agent import HotelAgent
 from app.agents.itinerary_agent import ItineraryAgent
 from app.agents.budget_agent import BudgetAgent
 from app.agents.recommendation_agent import RecommendationAgent
-from app.celery_app import celery_app
-from app.tasks import plan_trip_task
+
+# Import synchronous version (always available)
+from app.tasks import plan_trip_task_sync
+
+# Try to import Celery, but work without it if not available
+try:
+    from celery.result import AsyncResult
+    from app.celery_app import celery_app
+    from app.tasks import plan_trip_task
+    CELERY_AVAILABLE = True
+except (ImportError, Exception):
+    CELERY_AVAILABLE = False
 
 load_dotenv()
 
@@ -41,14 +50,21 @@ def plan_trip():
             if field not in data:
                 return jsonify({'error': f'Missing required field: {field}'}), 400
         
-        # Start the trip planning process
-        task = plan_trip_task.delay(data)
-        
-        return jsonify({
-            'message': 'Trip planning started',
-            'task_id': task.id,
-            'status': 'processing'
-        }), 202
+        # Use Celery if available, otherwise run synchronously
+        if CELERY_AVAILABLE and os.getenv('REDIS_URL'):
+            task = plan_trip_task.delay(data)
+            return jsonify({
+                'message': 'Trip planning started',
+                'task_id': task.id,
+                'status': 'processing'
+            }), 202
+        else:
+            # Run synchronously (for free tier without Redis/Celery)
+            result = plan_trip_task_sync(data)
+            return jsonify({
+                'status': 'completed',
+                'result': result
+            }), 200
         
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -56,6 +72,11 @@ def plan_trip():
 @app.route('/api/trip-status/<task_id>', methods=['GET'])
 def get_trip_status(task_id):
     """Check the status of a trip planning task"""
+    if not CELERY_AVAILABLE:
+        return jsonify({
+            'error': 'Celery not available. Trip planning runs synchronously.'
+        }), 400
+    
     try:
         task_result = AsyncResult(task_id, app=celery_app)
         
