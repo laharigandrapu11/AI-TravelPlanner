@@ -86,8 +86,8 @@ services:
           name: smarttrip-redis
           property: connectionString
 
-databases:
-  - name: smarttrip-redis
+  - type: redis
+    name: smarttrip-redis
     plan: free
-    type: redis
+    ipAllowList: []
 
