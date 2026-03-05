@@ -1,210 +1,92 @@
 # SmartTripPlanner
 
-A multi-agent system (MAS) travel management platform that automates itinerary planning, price tracking, and personalized trip recommendations using intelligent agents.
+A multi agent travel planning system that automates itinerary planning, flight and hotel search, and personalized trip recommendations. You give it a destination, dates, budget, and preferences. It spins up six specialized agents that work in parallel to build a full trip plan.
 
-## Overview
+---
 
-SmartTripPlanner leverages a distributed agent architecture to coordinate complex travel planning tasks. The system features a modern React frontend and a Python-based backend with Flask and FastAPI, orchestrated through Docker containers.
+## What It Does
 
-## Key Features
+A user submits a trip request through the frontend. The system hands it off to a Celery task so the user gets an immediate response with a task ID instead of waiting. In the background, six agents coordinate to search flights, find hotels, generate recommendations, build a daily itinerary, and validate everything against the budget. The frontend polls for status and displays the result when it is ready.
 
-- **Multi-Agent Architecture**: Intelligent task delegation across specialized agents
-- **Dynamic Itinerary Planning**: Automated schedule generation based on user preferences
-- **Real-Time Price Tracking**: Flight, hotel, and transportation price monitoring
-- **Personalized Recommendations**: AI-driven attraction and activity suggestions
-- **Interactive User Interface**: Modern, responsive web application for trip customization
-- **Scalable Deployment**: Containerized architecture with Docker Compose
+---
 
-## Architecture
+## Architecture Decisions
 
-### Technology Stack
+### Why Two Backend Frameworks: Flask and FastAPI
 
-**Frontend:**
-- React 18.2 with React Router
-- Tailwind CSS for styling
-- Axios for HTTP communication
-- Modern UI components (React DatePicker, React Select, Recharts)
+This is the question that comes up most when people look at the code. Flask runs on port 5000 and FastAPI runs on port 8000. They are doing different jobs.
 
-**Backend:**
-- **Flask** (Port 5000): Primary API gateway for client requests
-- **FastAPI** (Port 8000): High-performance agent-to-agent communication layer
-- **Celery**: Asynchronous task queue for agent coordination
-- **Redis**: Message broker and result backend for Celery
+Flask handles all incoming requests from the frontend. It is the stable, synchronous API layer that the React app talks to. It kicks off Celery tasks and returns task IDs. It is simple, predictable, and easy to reason about for standard request handling.
 
-**Multi-Agent System:**
-- `UserAgent`: Processes and validates user preferences
-- `FlightAgent`: Searches and analyzes flight options via Amadeus API
-- `HotelAgent`: Finds accommodation based on preferences
-- `ItineraryAgent`: Creates daily schedules and activity plans
-- `BudgetAgent`: Manages budget constraints and cost optimization
-- `RecommendationAgent`: Provides personalized destination suggestions
+FastAPI handles all agent to agent communication. The agents run async operations, call external APIs in parallel, and use background tasks to coordinate without blocking. FastAPI is built for exactly this. Its native async support via Python asyncio means the flight agent and hotel agent can run simultaneously instead of sequentially. It also gives us automatic API docs via Swagger which made debugging inter agent communication much easier during development.
 
-**External Integrations:**
-- Amadeus API for flight data (with mock data fallback)
-- Google Maps API for places and geocoding
-- Additional travel APIs can be integrated as needed
+The trade off is that running two frameworks adds complexity. There are two servers to manage, two sets of routes, and two places to look when something breaks. In hindsight a single FastAPI application could have handled both concerns since FastAPI supports synchronous routes too. We kept the split because Flask was already established when we introduced the agent layer, and refactoring mid project carried more risk than the operational overhead.
 
-## Installation & Setup
+### Why Six Agents Instead of One or Two
 
-### Prerequisites
+The first version had a single planning function that did everything in sequence. It worked but it had two problems. First, it was slow because every step waited for the previous one to finish. Second, any failure anywhere killed the whole plan.
 
-- Docker and Docker Compose
-- Node.js 18+ (for local frontend development)
-- Python 3.11+ (for local backend development)
+We broke it into six agents based on single responsibility. Each agent owns one domain: user preferences, flights, hotels, recommendations, itinerary building, and budget validation. This means flight search and hotel search can run in parallel instead of one after the other. It also means if the recommendation agent fails, the rest of the plan can still complete with a degraded result rather than a total failure.
 
-### Quick Start with Docker
+The six agent breakdown also maps cleanly to the external APIs. FlightAgent owns the Amadeus API. HotelAgent owns accommodation search. RecommendationAgent owns Google Maps. Having one agent per external dependency makes it easy to swap out or mock an API without touching anything else.
 
-1. **Clone the repository**
-   ```bash
-   git clone <repository-url>
-   cd AI-TravelPlanner
-   ```
+The trade off is coordination overhead. More agents means more message passing, more session state to track, and more places for things to go wrong silently. We use FastAPI background tasks and in memory session storage to track agent state, which works for the current scale but would need to move to Redis backed persistence for production.
 
-2. **Configure environment variables**
-   ```bash
-   cp env.example .env
-   # Edit .env with your API keys
-   ```
+### Why Celery for Task Queue
 
-3. **Start all services**
-   ```bash
-   docker-compose up --build
-   ```
+Trip planning involves multiple external API calls and can take several seconds. Making the user wait on a synchronous HTTP request was not acceptable. Celery lets us return a task ID immediately and process the work in the background.
 
-4. **Access the application**
-   - Frontend: http://localhost:3000
-   - Flask API: http://localhost:5000
-   - FastAPI: http://localhost:8000
-   - Redis: localhost:6379
+Redis serves as the Celery broker and result backend. It stores task state so the frontend can poll for updates without the backend holding a connection open.
 
-### Local Development Setup
+The trade off is that Celery adds operational complexity. You need the broker running, the worker running, and the main app running as three separate processes. For a simpler project this would be overkill. For a system making six external API calls per request it is the right call.
 
-#### Backend Development
+### Why Mock Data Fallback for Amadeus API
 
-```bash
-cd backend
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-pip install -r requirements.txt
+The Amadeus API has rate limits and requires credentials that not everyone running this locally will have. We built a mock data fallback that activates when the API credentials are missing or when the API returns an error. The mock data returns realistic looking flight and hotel results so the rest of the system can be developed and tested without a live API connection.
 
-# Configure environment variables
-export FLASK_ENV=development
-export REDIS_URL=redis://localhost:6379
-export CELERY_BROKER_URL=redis://localhost:6379
-export CELERY_RESULT_BACKEND=redis://localhost:6379
+The trade off is that mock data does not reflect real prices, availability, or routing. Any UI built around the mock results will need retesting against the real API. We documented which responses are mock in the API response so the frontend can surface a warning to the user.
 
-# Start Redis (if not using Docker)
-redis-server
+---
 
-# Start Celery worker (in one terminal)
-celery -A app.celery_app worker --loglevel=info
+## How the Agents Work Together
 
-# Start Flask application (in another terminal)
-python app.py
-
-# Start FastAPI service (in a third terminal)
-uvicorn app.fastapi_app:app --reload --port 8000
+```
+User Request
+    |
+UserAgent (validate and process preferences)
+    |
++----------------------------------+
+| Parallel Execution               |
+| FlightAgent    HotelAgent        |
+|      |              |            |
+|      RecommendationAgent         |
+|              |                   |
+|        ItineraryAgent            |
++----------------------------------+
+    |
+BudgetAgent (validate total cost against budget)
+    |
+Final Trip Plan returned to user
 ```
 
-#### Frontend Development
+FlightAgent and HotelAgent run in parallel because they are independent. RecommendationAgent also runs in parallel since it does not depend on flight or hotel results. ItineraryAgent runs last because it needs all three to build the daily schedule. BudgetAgent always runs at the end to validate the complete plan.
 
-```bash
-cd frontend
-npm install
-npm start
-```
+---
 
-## Configuration
+## Technology Stack
 
-### Environment Variables
+| Layer | Technology | Why |
+|---|---|---|
+| Frontend | React 18 + Tailwind | Component model suits the multi step trip form |
+| Client API | Flask | Simple synchronous layer for frontend requests |
+| Agent API | FastAPI | Native async for parallel agent execution |
+| Task Queue | Celery | Non blocking background processing for trip planning |
+| Message Broker | Redis | Celery broker and result backend |
+| Flight Data | Amadeus API | Industry standard travel API with mock fallback |
+| Places Data | Google Maps API | Geocoding and place recommendations |
+| Containers | Docker Compose | Single command startup for all services |
 
-Create a `.env` file in the root directory with the following variables:
-
-```env
-# Flask Configuration
-FLASK_ENV=development
-FLASK_DEBUG=True
-
-# Redis Configuration
-REDIS_URL=redis://localhost:6379
-CELERY_BROKER_URL=redis://localhost:6379
-CELERY_RESULT_BACKEND=redis://localhost:6379
-
-# External API Keys
-AMADEUS_CLIENT_ID=your_amadeus_client_id
-AMADEUS_CLIENT_SECRET=your_amadeus_client_secret
-GOOGLE_MAPS_API_KEY=your_google_maps_api_key
-
-# Frontend Configuration
-REACT_APP_API_URL=http://localhost:5000
-```
-
-### API Keys Setup
-
-1. **Amadeus API** (for flight data):
-   - Sign up at [Amadeus for Developers](https://developers.amadeus.com/)
-   - Obtain your Client ID and Client Secret
-   - Add credentials to `.env` file
-
-2. **Google Maps API** (for places and geocoding):
-   - Access [Google Cloud Console](https://console.cloud.google.com/)
-   - Enable Places API and Maps JavaScript API
-   - Generate an API key
-   - Add key to `.env` file
-
-## Usage
-
-### Example Use Case
-
-**Request**: "Plan a 5-day trip to Rome under $1500 focused on history and cafes."
-
-**Process Flow**:
-1. **UserAgent** collects and processes preferences
-2. **FlightAgent** searches for affordable flights
-3. **HotelAgent** finds suitable accommodations
-4. **RecommendationAgent** suggests historical sites and cafes
-5. **ItineraryAgent** builds a daily schedule
-6. **BudgetAgent** ensures total cost stays within $1500
-
-### API Endpoints
-
-#### Main Trip Planning
-- `POST /api/plan-trip` - Initiate trip planning process (returns task_id)
-- `GET /api/trip-status/{task_id}` - Check planning task status
-
-#### Individual Agent Endpoints
-- `POST /api/flights/search` - Search flights
-- `POST /api/hotels/search` - Search hotels
-- `POST /api/recommendations` - Get personalized recommendations
-- `POST /api/budget/analyze` - Analyze budget constraints
-
-#### FastAPI Agent Communication
-- `POST /api/agents/coordinate` - Coordinate all agents for trip planning
-- `GET /api/agents/session/{session_id}` - Get agent session status
-- `POST /api/agents/message` - Send messages between agents
-
-### API Testing Examples
-
-**Health Check:**
-```bash
-curl http://localhost:5000/api/health
-```
-
-**Trip Planning:**
-```bash
-curl -X POST http://localhost:5000/api/plan-trip \
-  -H "Content-Type: application/json" \
-  -d '{
-    "destination": "Rome",
-    "start_date": "2024-06-01",
-    "end_date": "2024-06-05",
-    "budget": 1500,
-    "preferences": {
-      "activities": ["culture", "food"],
-      "accommodation_style": "moderate"
-    }
-  }'
-```
+---
 
 ## Project Structure
 
@@ -229,141 +111,79 @@ AI-TravelPlanner/
 ├── frontend/
 │   ├── src/
 │   │   ├── components/
-│   │   │   ├── Header.js
-│   │   │   ├── TripPlanner.js
-│   │   │   ├── TripResults.js
-│   │   │   └── Dashboard.js
-│   │   ├── config/
-│   │   │   └── api.js
-│   │   ├── App.js
-│   │   └── index.js
+│   │   └── config/
 │   ├── package.json
 │   └── Dockerfile
 ├── docker-compose.yml
 ├── env.example
-├── README.md
-└── DEPLOYMENT.md
+├── DEPLOYMENT.md
+└── README.md
 ```
 
-## Multi-Agent System
+---
 
-### Agent Responsibilities
+## Running Locally
 
-1. **UserAgent**: Processes user preferences and requirements, validates input data
-2. **FlightAgent**: Searches and analyzes flight options using Amadeus API
-3. **HotelAgent**: Finds accommodation based on preferences and budget
-4. **ItineraryAgent**: Creates daily schedules and activity plans
-5. **BudgetAgent**: Manages budget constraints and cost optimization
-6. **RecommendationAgent**: Provides personalized destination suggestions
-
-### Agent Communication Flow
-
-```
-User Request
-    ↓
-UserAgent (process preferences)
-    ↓
-┌─────────────────────────────────┐
-│  Parallel Agent Execution       │
-├─────────────────────────────────┤
-│  FlightAgent  →  HotelAgent     │
-│       ↓              ↓          │
-│  RecommendationAgent            │
-│       ↓                         │
-│  ItineraryAgent                 │
-└─────────────────────────────────┘
-    ↓
-BudgetAgent (validate constraints)
-    ↓
-Final Trip Plan
-```
-
-## Deployment
-
-### Quick Deploy (Recommended)
-
-The easiest way to deploy is using **Railway** - it automatically detects Docker Compose and handles everything:
-
-1. Sign up at [railway.app](https://railway.app)
-2. Create new project → Deploy from GitHub
-3. Add environment variables (see `DEPLOYMENT.md`)
-4. Deploy (automatic)
-
-**See [DEPLOYMENT.md](DEPLOYMENT.md) for detailed deployment instructions** including Railway, Render, and DigitalOcean options.
-
-### Local Docker Deployment
-
-**Start services:**
 ```bash
-docker-compose up --build -d
+cp env.example .env
+# Add your API keys to .env
+# Required: AMADEUS_CLIENT_ID, AMADEUS_CLIENT_SECRET, GOOGLE_MAPS_API_KEY
+# The system falls back to mock data if keys are missing
+
+docker compose up --build
 ```
 
-**View logs:**
+Frontend runs at http://localhost:3000, Flask API at http://localhost:5000, FastAPI at http://localhost:8000.
+
+Or use the startup script:
+
 ```bash
-docker-compose logs -f
+./start.sh
 ```
 
-**Stop services:**
-```bash
-docker-compose down
-```
+---
 
-**View specific service logs:**
-```bash
-docker-compose logs -f backend
-docker-compose logs -f frontend
-docker-compose logs -f celery
-```
+## API Endpoints
+
+**Trip Planning (Flask)**
+
+`POST /api/plan-trip` — submit a trip request, returns a task ID immediately
+
+`GET /api/trip-status/{task_id}` — poll for planning status and results
+
+**Agent Endpoints (FastAPI)**
+
+`POST /api/agents/coordinate` — coordinate all agents for a trip
+
+`GET /api/agents/session/{session_id}` — check agent session status
+
+`POST /api/agents/message` — send messages between agents
+
+Individual agent endpoints: `/api/agents/flight/search`, `/api/agents/hotel/search`, `/api/agents/recommendations`, `/api/agents/itinerary/create`, `/api/agents/budget/analyze`
+
+---
 
 ## Testing
 
-### Backend Testing
-
 ```bash
+# Backend
 cd backend
 python -m pytest tests/
-```
 
-### Frontend Testing
-
-```bash
+# Frontend
 cd frontend
 npm test
 ```
 
-## Monitoring & Logging
+---
 
-- **Application Logs**: Monitor via Docker logs for each service
-- **Agent Communication**: Track agent messages through FastAPI endpoints
-- **Task Queue**: Monitor Celery task status and execution
-- **Error Handling**: Check application logs for agent failures and API errors
+## Decision Summary
 
-## Contributing
-
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add some amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
-
-## License
-
-This project is licensed under the MIT License - see the LICENSE file for details.
-
-## Support
-
-For support and questions:
-- Create an issue in the repository
-- Review the API endpoint documentation
-- Check the agent implementation details
-
-## Future Enhancements
-
-- [ ] Real-time price alerts and notifications
-- [ ] Machine learning models for improved recommendations
-- [ ] Mobile application development
-- [ ] Integration with additional travel APIs
-- [ ] Advanced budget optimization algorithms
-- [ ] Social features and trip sharing capabilities
-- [ ] User authentication and trip history persistence
-- [ ] Database integration for data persistence
+| Decision | What we picked | What we considered | Why |
+|---|---|---|---|
+| Client API | Flask | FastAPI only | Stable synchronous layer, already established |
+| Agent API | FastAPI | Flask only | Native async for parallel agent execution |
+| Task queue | Celery + Redis | Synchronous processing | Non blocking, user gets response immediately |
+| Agent count | Six specialized agents | Fewer larger agents | Single responsibility, parallel execution, easier to test |
+| External API fallback | Mock data | Hard failure | Development without API credentials, resilience |
+| Containers | Docker Compose | Manual setup | Single command startup for all five services |
